@@ -1,21 +1,15 @@
-#include "mini_redis/Database.h"
-#include <iostream>
+#include "mini_redis/TcpServer.h"
 
 using namespace std;
 
 int main() {
-    Database db;
+    TcpServer server(6380);
 
-    db.set("name", "hieu");
-    db.set("language", "cpp");
+    if (!server.start()) {
+        return 1;
+    }
 
-    cout << "name = " << db.get("name") << endl;
-    cout << "language = " << db.get("language") << endl;
-    cout << "missing = " << db.get("missing") << endl;
-
-    db.del("name");
-
-    cout << "name after delete = " << db.get("name") << endl;
+    server.run();
 
     return 0;
 }
