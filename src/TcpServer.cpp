@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <sys/event.h>
 
+#define MAX_EVENTS 64
+
 TcpServer::TcpServer(int port) : port(port), server_fd(-1), kqueue_fd(-1) {}
 
 TcpServer::~TcpServer() {
@@ -34,6 +36,126 @@ bool TcpServer::setNonBlocking(int fd) {
     }
 
     return true;
+}
+
+void TcpServer::acceptNewClients() {
+    while (true) {
+        int client_fd = accept(server_fd, nullptr, nullptr);
+
+        if (client_fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+
+            std::cerr << "accept failed: " << strerror(errno) << "\n";
+            break;
+        }
+
+        if (!setNonBlocking(client_fd)) {
+            std::cerr << "Failed to set client non-blocking: "
+                      << strerror(errno) << "\n";
+            close(client_fd);
+            continue;
+        }
+
+        clients.emplace(client_fd, Client{client_fd, "", ""});
+
+        struct kevent change;
+        EV_SET(
+            &change,
+            client_fd,
+            EVFILT_READ,
+            EV_ADD,
+            0,
+            0,
+            nullptr
+        );
+
+        if (kevent(kqueue_fd, &change, 1, nullptr, 0, nullptr) < 0) {
+            std::cerr << "Failed to register client fd "
+                      << client_fd << ": "
+                      << strerror(errno) << "\n";
+
+            close(client_fd);
+            clients.erase(client_fd);
+            continue;
+        }
+
+        std::cout << "Client connected, fd = " << client_fd << "\n";
+    }
+}
+
+void TcpServer::readFromClient(int client_fd) {
+    auto it = clients.find(client_fd);
+
+    if (it == clients.end()) {
+        return;
+    }
+
+    Client& client = it->second;
+
+    char buffer[1024];
+
+    while (true) {
+        ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
+
+        if (bytes_read > 0) {
+            client.read_buffer.append(buffer, bytes_read);
+
+            std::cout << "Received from fd " << client_fd
+                      << ", " << bytes_read << " bytes:\n";
+
+            std::cout.write(buffer, bytes_read);
+            std::cout << "\n";
+
+            const char* response = "+PONG\r\n";
+            ssize_t bytes_written = write(client_fd, response, strlen(response));
+
+            if (bytes_written < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break;
+                }
+
+                std::cerr << "write failed: " << strerror(errno) << "\n";
+                closeClient(client_fd);
+                return;
+            }
+        } else if (bytes_read == 0) {
+            std::cout << "Client closed connection, fd = "
+                      << client_fd << "\n";
+            closeClient(client_fd);
+            return;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+
+            std::cerr << "read failed: " << strerror(errno) << "\n";
+            closeClient(client_fd);
+            return;
+        }
+    }
+}
+
+void TcpServer::closeClient(int client_fd) {
+    struct kevent change;
+
+    EV_SET(
+        &change,
+        client_fd,
+        EVFILT_READ,
+        EV_DELETE,
+        0,
+        0,
+        nullptr
+    );
+
+    kevent(kqueue_fd, &change, 1, nullptr, 0, nullptr);
+
+    clients.erase(client_fd);
+    close(client_fd);
+
+    std::cout << "Closed client fd = " << client_fd << "\n";
 }
 
 bool TcpServer::start() {
@@ -102,57 +224,32 @@ void TcpServer::run() {
         return;
     }
 
-    struct kevent events[64];
-
-    int event_count = 
+    struct kevent events[MAX_EVENTS];
 
     while (true) {
-        int client_fd = accept(server_fd, nullptr, nullptr);
+        int event_count = kevent(
+            kqueue_fd,
+            nullptr,
+            0,
+            events,
+            MAX_EVENTS,
+            nullptr
+        );
 
-        if (client_fd < 0) {
-            std::cerr << "Failed to accept client\n" << strerror(errno) << "\n";;
+        if (event_count < 0) {
+            std::cerr << "kevent wait failed: "
+                      << strerror(errno) << "\n";
             continue;
         }
 
-        Client newClient;
-        newClient.fd = client_fd;
-        
-        if (!setNonBlocking(newClient.fd)) {
-            std::cerr << "Failed to set TCP client non-blocking: " << strerror(errno) << '\n';
+        for (int i = 0; i < event_count; ++i) {
+            int fd = static_cast<int>(events[i].ident);
+
+            if (fd == server_fd) {
+                acceptNewClients();
+            } else {
+                readFromClient(fd);
+            }
         }
-
-        std::cout << "Client connected\n";
-
-        // handleClient(newClient);
-
-        std::cout << "Client disconnected\n";
     }
 }
-
-// void TcpServer::handleClient(Client client) {
-//     while (true) {
-//         char buffer[1024] = {};
-//         ssize_t bytes_read = read(client.fd, buffer, sizeof(buffer) - 1);
-
-//         if (bytes_read == 0) {
-//             std::cout << "Client closed connection\n";
-//             break;
-//         } else if (bytes_read == -1){
-//             std::cerr << "Read failed: " << strerror(errno) << "\n";
-//             break;
-//         }
-
-//         std::cout << "Received " << bytes_read << " bytes:\n";
-//         std::cout << buffer << "\n";
-
-//         const char* response = "+PONG\r\n";
-//         ssize_t bytes_written = write(client_fd, response, strlen(response));
-
-//         if (bytes_written < 0) {
-//             std::cerr << "Write failed: " << strerror(errno) << "\n";
-//             break;
-//         }
-//     }
-
-//     close(client_fd);
-// }

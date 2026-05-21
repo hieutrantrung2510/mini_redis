@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_redis/Client.h"
+#include <unordered_map>
 
 class TcpServer {
 private:
@@ -10,7 +11,7 @@ private:
 
     std::unordered_map<int, Client> clients;
 
-    bool setNonBlocking(int fd) {};
+    bool setNonBlocking(int fd);
     void acceptNewClients();
     void readFromClient(int client_fd);
     void closeClient(int client_fd);
