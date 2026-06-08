@@ -15,6 +15,9 @@ private:
     void acceptNewClients();
     void readFromClient(int client_fd);
     void closeClient(int client_fd);
+    void enableWriteEvent(int client_fd);
+    void disableWriteEvent(int client_fd);
+    void writeToClient(int client_fd);
     
 public:
     explicit TcpServer(int port);

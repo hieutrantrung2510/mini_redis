@@ -72,7 +72,7 @@ void TcpServer::acceptNewClients() {
         );
 
         if (kevent(kqueue_fd, &change, 1, nullptr, 0, nullptr) < 0) {
-            std::cerr << "Failed to register client fd "
+            std::cerr << "Failed to register client - READ"
                       << client_fd << ": "
                       << strerror(errno) << "\n";
 
@@ -108,18 +108,8 @@ void TcpServer::readFromClient(int client_fd) {
             std::cout.write(buffer, bytes_read);
             std::cout << "\n";
 
-            const char* response = "+PONG\r\n";
-            ssize_t bytes_written = write(client_fd, response, strlen(response));
-
-            if (bytes_written < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    break;
-                }
-
-                std::cerr << "write failed: " << strerror(errno) << "\n";
-                closeClient(client_fd);
-                return;
-            }
+            client.write_buffer += "+PONG\r\n";
+            enableWriteEvent(client_fd);
         } else if (bytes_read == 0) {
             std::cout << "Client closed connection, fd = "
                       << client_fd << "\n";
@@ -134,6 +124,71 @@ void TcpServer::readFromClient(int client_fd) {
             closeClient(client_fd);
             return;
         }
+    }
+}
+
+void TcpServer::enableWriteEvent(int client_fd) {
+    struct kevent change;
+
+    EV_SET(
+        &change,
+        client_fd,
+        EVFILT_WRITE,
+        EV_ADD,
+        0,
+        0,
+        nullptr
+    );
+
+    if (kevent(kqueue_fd, &change, 1, nullptr, 0, nullptr) < 0) {
+        std::cerr << "Failed to register client - WRITE"
+                    << client_fd << ": "
+                    << strerror(errno) << "\n";
+        closeClient(client_fd);
+    }
+}
+
+void TcpServer::disableWriteEvent(int client_fd) {
+    struct kevent change;
+
+    EV_SET(
+        &change,
+        client_fd,
+        EVFILT_WRITE,
+        EV_DELETE,
+        0,
+        0,
+        nullptr
+    );
+
+    kevent(kqueue_fd, &change, 1, nullptr, 0, nullptr);
+}
+
+void TcpServer::writeToClient(int client_fd) {
+    auto it = clients.find(client_fd);
+
+    if (it == clients.end()) {
+        return;
+    }
+
+    Client& client = it->second;
+
+    while (!client.write_buffer.empty()) {
+        ssize_t bytes_written = write(client_fd, client.write_buffer.data(), client.write_buffer.size());
+
+        if (bytes_written > 0) {
+            client.write_buffer.erase(0, bytes_written);
+        } else if (bytes_written == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return;
+            }
+
+            std::cerr << "write failed on fd" << client_fd << ": " << strerror(errno) << '\n';
+            closeClient(client_fd);
+            return;
+        }
+
+        disableWriteEvent(client_fd);
     }
 }
 
@@ -247,8 +302,10 @@ void TcpServer::run() {
 
             if (fd == server_fd) {
                 acceptNewClients();
-            } else {
+            } else if (events[i].filter == EVFILT_READ) {
                 readFromClient(fd);
+            } else if (events[i].filter == EVFILT_WRITE) {
+                writeToClient(fd);
             }
         }
     }
